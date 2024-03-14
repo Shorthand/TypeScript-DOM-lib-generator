@@ -11,6 +11,7 @@ import {
   assertUnique,
 } from "./helpers.js";
 import { collectLegacyNamespaceTypes } from "./legacy-namespace.js";
+import { isGlobalBlacklisted } from "./blacklist.js";
 
 /// Decide which members of a function to emit
 enum EmitScope {
@@ -776,7 +777,11 @@ export function emitWebIdl(
     i: Browser.Interface,
     emitScope: EmitScope,
     p: Browser.Property,
+    isGlobal = false,
   ) {
+    if (isGlobal && isGlobalBlacklisted(p.name)) {
+      return;
+    }
     emitComments(p, printer.printLine);
 
     // Treat window.name specially because of
@@ -876,13 +881,14 @@ export function emitWebIdl(
     prefix: string,
     emitScope: EmitScope,
     i: Browser.Interface,
+    isGlobal = false,
   ) {
     if (i.properties) {
       mapToArray(i.properties.property)
         .filter((m) => matchScope(emitScope, m))
         .filter((p) => !isCovariantEventHandler(i, p))
         .sort(compareName)
-        .forEach((p) => emitProperty(prefix, i, emitScope, p));
+        .forEach((p) => emitProperty(prefix, i, emitScope, p, isGlobal));
     }
   }
 
@@ -890,7 +896,11 @@ export function emitWebIdl(
     prefix: string,
     m: Browser.Method,
     conflictedMembers: Set<string>,
+    isGlobal = false,
   ) {
+    if (isGlobal && isGlobalBlacklisted(m.name)) {
+      return;
+    }
     function printLine(content: string) {
       if (m.name && conflictedMembers.has(m.name)) {
         printer.printLineToStack(content);
@@ -958,6 +968,7 @@ export function emitWebIdl(
     emitScope: EmitScope,
     i: Browser.Interface,
     conflictedMembers: Set<string>,
+    isGlobal = false,
   ) {
     // If prefix is not empty, then this is the global declare function addEventListener, we want to override this
     // Otherwise, this is EventTarget.addEventListener, we want to keep that.
@@ -984,7 +995,7 @@ export function emitWebIdl(
           }
         })
         .sort(compareName)
-        .forEach((m) => emitMethod(prefix, m, conflictedMembers));
+        .forEach((m) => emitMethod(prefix, m, conflictedMembers, isGlobal));
     }
     if (i.anonymousMethods && emitScope === EmitScope.InstanceOnly) {
       const stringifier = i.anonymousMethods.method.find((m) => m.stringifier);
@@ -995,7 +1006,7 @@ export function emitWebIdl(
 
     // The window interface inherited some methods from "Object",
     // which need to explicitly exposed
-    if (i.name === "Window" && prefix === "declare function ") {
+    if (i.name === "Window" && prefix === "declare function " && !isGlobalBlacklisted(i.name)) {
       printer.printLine("declare function toString(): string;");
     }
   }
@@ -1026,15 +1037,16 @@ export function emitWebIdl(
     prefix: string,
     emitScope: EmitScope,
     i: Browser.Interface,
+    isGlobal = false,
   ) {
     const conflictedMembers = extendConflictsBaseTypes[i.name]
       ? extendConflictsBaseTypes[i.name].memberNames
       : new Set<string>();
-    emitProperties(prefix, emitScope, i);
+    emitProperties(prefix, emitScope, i, isGlobal);
     const methodPrefix = prefix.startsWith("declare var")
       ? "declare function "
       : "";
-    emitMethods(methodPrefix, emitScope, i, conflictedMembers);
+    emitMethods(methodPrefix, emitScope, i, conflictedMembers, isGlobal);
     if (emitScope === EmitScope.InstanceOnly) {
       emitIteratorForEach(i);
     }
@@ -1042,13 +1054,13 @@ export function emitWebIdl(
 
   /// Emit all members of every interfaces at the root level.
   /// Called only once on the global polluter object
-  function emitAllMembers(i: Browser.Interface) {
-    emitMembers(/*prefix*/ "declare var ", EmitScope.All, i);
+  function emitAllMembers(i: Browser.Interface, isGlobal = false) {
+    emitMembers(/*prefix*/ "declare var ", EmitScope.All, i, isGlobal);
 
     for (const relatedIName of iNameToIDependList[i.name]) {
       const i = allInterfacesMap[relatedIName];
       if (i) {
-        emitAllMembers(i);
+        emitAllMembers(i, isGlobal);
       }
     }
   }
@@ -1511,7 +1523,7 @@ export function emitWebIdl(
     }
 
     if (polluter) {
-      emitAllMembers(polluter);
+      emitAllMembers(polluter, true);
       emitEventHandlers("declare var ", polluter);
     }
 
